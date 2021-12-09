@@ -1,5 +1,5 @@
 ---
-title: "Build Predictive Model for Loan Prediction Data Set: Logistic Regression"
+title: "Logistic Regression: Loan Prediction Data Set"
 knit: (function(input_file, encoding) {
   out_dir <- 'docs';
   rmarkdown::render(input_file,
