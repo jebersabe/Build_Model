@@ -63,14 +63,23 @@ data_4_rec <- data %>%
          PaymentIncomeRatio = MonthlyPayment/CombinedIncome) %>% 
   select(-ApplicantIncome, -CoapplicantIncome, -LoanAmount, -Loan_Amount_Term, -Loan_ID, -CombinedIncome, -Gender, -Education)
 
+```
 
+Let us take a look at the data
+```{r}
 data_4_rec %>% glimpse()
+```
+
+
+
+Let's check also for missing values.
+```{r}
 colSums(is.na(data_4_rec))
 ```
 
 
 
-### Split Data and Folds
+### Split Data and Create Folds for Cross-validation
 
 ```{r}
 set.seed(123)
@@ -79,11 +88,15 @@ data_tr <- training(data_split)
 data_te <- testing(data_split)
 
 data_tr %>% glimpse()
+```
 
+```{r}
 set.seed(345)
 folds <- vfold_cv(data_tr)
 folds
 ```
+
+
 
 ### The Recipe, Finally
 
@@ -110,12 +123,12 @@ Notice the class imbalance in the target variable:
 ```{r}
 data_tr %>% 
   group_by(Loan_Status) %>% 
-  count()
+  count() %>% knitr::kable(digits = 3)
 ```
 
 The class imbalance is resolved by `step_smote()`
 ```{r}
-data_rec %>% prep() %>% bake(new_data = NULL) %>% count(Loan_Status)
+data_rec %>% prep() %>% bake(new_data = NULL) %>% count(Loan_Status) %>% knitr::kable(digits = 3)
 ```
 
 ## Build Model
@@ -156,12 +169,14 @@ glm_rs
 ### Collect Metrics
 
 ```{r}
-collect_metrics(glm_rs)
+collect_metrics(glm_rs) %>% 
+  knitr::kable(digits = 3)
 ```
 
 ```{r}
 glm_rs %>% 
-  conf_mat_resampled()
+  conf_mat_resampled() %>% 
+  knitr::kable(digits = 3)
 ```
 
 ### Plot ROC Curve
@@ -186,7 +201,8 @@ final_fit %>% head(10)
 ```
 
 ```{r}
-collect_metrics(final_fit)
+collect_metrics(final_fit) %>% 
+  knitr::kable(digits = 3)
 ```
 
 ```{r}
@@ -207,8 +223,10 @@ final_fit %>%
   pull(.workflow) %>% 
   pluck(1) %>% 
   tidy(exponentiate = T) %>% 
-  arrange(desc(estimate)) %>% 
-  filter(term != "(Intercept)")
+  arrange(p.value) %>% 
+  filter(term != "(Intercept)") %>% 
+  knitr::kable(digits = 3)
+  
 ```
 
 
