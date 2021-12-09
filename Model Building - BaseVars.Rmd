@@ -1,0 +1,223 @@
+---
+title: "Build Predictive Model for Loan Prediction Data Set"
+author: "Jake Bersabe"
+date: "08/12/2021"
+output: 
+  html_document:
+    css: "style.css"
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = F, warning = F, fig.align = "center")
+```
+
+## Import the data set and libraries
+
+```{r}
+library(dplyr)
+
+# library(rsample)
+# library(parsnip)
+# library(yardstick)
+# library(recipes)
+# library(workflows)
+
+library(tidymodels)
+library(themis)
+
+data <- readr::read_csv("train.csv")
+glimpse(data)
+```
+
+## Create `recipe()`
+
+### Prepare Data for `recipe()`
+
+```{r}
+# Function to add monthly payment column
+monthly_payment <- function(loan_amount, loan_amount_term){
+  r <- 0.005
+  monthly_payment <- (loan_amount/(((1+r)^loan_amount_term)-1))*(((1+r)^loan_amount_term)*r)
+  return(monthly_payment)
+} 
+
+
+data_4_rec <- data %>%
+  mutate(Gender = factor(Gender),
+         Married = factor(Married),
+         Education = factor(Education),
+         Self_Employed = factor(Self_Employed),
+         Property_Area = factor(Property_Area)) %>% 
+  mice::mice(m=2, maxit = 2, method = 'cart', seed = 500) %>% 
+  mice::complete(1) %>% 
+  mutate(LoanAmount = LoanAmount*1000) %>% 
+  select(-Loan_ID)
+
+
+data_4_rec %>% glimpse()
+colSums(is.na(data_4_rec))
+```
+
+
+
+### Split Data and Folds
+
+```{r}
+set.seed(123)
+data_split <- initial_split(data_4_rec, strata = Loan_Status)
+data_tr <- training(data_split)
+data_te <- testing(data_split)
+
+data_tr %>% glimpse()
+
+set.seed(345)
+folds <- vfold_cv(data_tr)
+folds
+```
+
+### The Recipe, Finally
+
+```{r}
+data_rec <- recipe(Loan_Status ~ ., data = data_tr) %>% 
+  step_string2factor(Loan_Status) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_smote(Loan_Status, seed = 123) %>% 
+  step_zv(all_predictors()) %>% 
+  step_center(all_predictors()) %>% 
+  step_scale(all_predictors())
+
+```
+
+
+Let's take a glimpse at the pre-processed data.
+```{r}
+data_rec %>% prep() %>% bake(new_data = NULL) %>% glimpse()
+```
+
+
+
+Notice the class imbalance in the target variable:
+```{r}
+data_tr %>% 
+  group_by(Loan_Status) %>% 
+  count()
+```
+
+The class imbalance is resolved by `step_smote()`
+```{r}
+data_rec %>% prep() %>% bake(new_data = NULL) %>% count(Loan_Status)
+```
+
+## Build Model
+
+### Create Model Specification
+
+```{r}
+glm_spec <- logistic_reg() %>% 
+  set_engine("glm")
+```
+
+
+### Create **Workflow**
+
+```{r}
+data_wf <- workflow() %>% 
+  add_recipe(data_rec) %>% 
+  add_model(glm_spec)
+
+data_wf
+```
+
+## Fit Model
+
+### Fit to Folds
+
+```{r}
+glm_rs <- data_wf %>% 
+  fit_resamples(
+    resamples = folds,
+    metrics = metric_set(roc_auc, accuracy, sensitivity, specificity),
+    control = control_resamples(save_pred = T)
+  )
+
+glm_rs
+```
+
+### Collect Metrics
+
+```{r}
+collect_metrics(glm_rs)
+```
+
+```{r}
+glm_rs %>% 
+  conf_mat_resampled()
+```
+
+### Plot ROC Curve
+
+```{r}
+glm_rs %>% 
+  collect_predictions() %>% 
+  group_by(id) %>% 
+  roc_curve(Loan_Status, .pred_N) %>% 
+  autoplot()
+```
+
+## Final Fit
+
+```{r}
+final_fit <- data_wf %>% 
+  last_fit(data_split,
+           metrics = metric_set(roc_auc, accuracy, sensitivity, specificity, kap),
+    control = control_resamples(save_pred = T))
+
+final_fit %>% head(10)
+```
+
+```{r}
+collect_metrics(final_fit)
+```
+
+```{r}
+final_fit %>% 
+  collect_predictions() %>% 
+  group_by(id) %>% 
+  roc_curve(Loan_Status, .pred_N) %>% 
+  autoplot()
+```
+
+```{r}
+collect_predictions(final_fit) %>% 
+  conf_mat(Loan_Status, .pred_class)
+```
+
+```{r}
+final_fit %>% 
+  pull(.workflow) %>% 
+  pluck(1) %>% 
+  tidy(exponentiate = T) %>% 
+  arrange(desc(estimate)) %>% 
+  filter(term != "(Intercept)")
+```
+
+
+```{r}
+final_fit %>% 
+  pull(.workflow) %>% 
+  pluck(1) %>% 
+  tidy() %>% 
+  filter(term != "(Intercept)") %>% 
+  ggplot(aes(estimate, forcats::fct_reorder(term, estimate))) +
+  geom_vline(xintercept = 0, color = "gray50", lty = 2, size = 1.2) +
+  geom_errorbar(aes(xmin = estimate - std.error,
+                    xmax = estimate + std.error),
+                width = 0.2, alpha = 0.7) +
+  geom_point()+
+  labs(x = "Estimate",
+       y = "")
+```
+
+The variables to the right of the vertical line increase the probability of Y in Loan_Status and those to the left does the opposite.
