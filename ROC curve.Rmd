@@ -1,0 +1,33 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+glm_rs %>% 
+  collect_predictions() %>% 
+  group_by(id) %>% 
+  roc_curve(Loan_Status, .pred_N)
+```
+
+
+```{r}
+glm_rs %>% 
+  collect_predictions() %>% 
+  group_by(id) %>% 
+  roc_curve(Loan_Status, .pred_N) %>% 
+  ggplot(aes(y = sensitivity, x = (1-specificity), group = id, color = id))+
+  geom_path(size = 1)+
+  geom_abline(slope = 1, intercept = 0, linetype = 2)+
+  coord_equal()+
+  labs(title = "Logistic Regression ROC Curves", color = NULL, 
+       x = "1-Specificity",
+       y = "Sensitivity")+
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5),
+        panel.border = element_rect(colour = "black", fill=NA, size=0.5)
+        )
+  
+```
+
+

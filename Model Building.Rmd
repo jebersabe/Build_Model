@@ -54,7 +54,8 @@ data_4_rec <- data %>%
          Married = factor(Married),
          Education = factor(Education),
          Self_Employed = factor(Self_Employed),
-         Property_Area = factor(Property_Area)) %>% 
+         Property_Area = factor(Property_Area),
+         Loan_Status = factor(Loan_Status)) %>% 
   mice::mice(m=2, maxit = 2, method = 'cart', seed = 500) %>% 
   mice::complete(1) %>% 
   mutate(LoanAmount = LoanAmount*1000,
@@ -79,7 +80,7 @@ colSums(is.na(data_4_rec))
 
 
 
-### Split Data and Create Folds for Cross-validation
+### Split Data and Create Folds for Cross-Validation
 
 ```{r}
 set.seed(123)
@@ -102,7 +103,6 @@ folds
 
 ```{r}
 data_rec <- recipe(Loan_Status ~ ., data = data_tr) %>% 
-  step_string2factor(Loan_Status) %>% 
   step_dummy(all_nominal_predictors()) %>% 
   step_smote(Loan_Status, seed = 123) %>% 
   step_zv(all_predictors()) %>% 
@@ -123,21 +123,25 @@ Notice the class imbalance in the target variable:
 ```{r}
 data_tr %>% 
   group_by(Loan_Status) %>% 
-  count() %>% knitr::kable(digits = 3)
+  count()
 ```
 
 The class imbalance is resolved by `step_smote()`
 ```{r}
-data_rec %>% prep() %>% bake(new_data = NULL) %>% count(Loan_Status) %>% knitr::kable(digits = 3)
+data_rec %>% prep() %>% bake(new_data = NULL) %>% count(Loan_Status)
 ```
 
 ## Build Model
 
-### Create Model Specification
+### Create Models Specifications
 
 ```{r}
 glm_spec <- logistic_reg() %>% 
   set_engine("glm")
+
+rf_spec <- rand_forest() %>% 
+  set_engine("ranger") %>% 
+  set_mode("classification")
 ```
 
 
@@ -145,18 +149,18 @@ glm_spec <- logistic_reg() %>%
 
 ```{r}
 data_wf <- workflow() %>% 
-  add_recipe(data_rec) %>% 
-  add_model(glm_spec)
+  add_recipe(data_rec)
 
 data_wf
 ```
 
-## Fit Model
+## Logistic Regression
 
-### Fit to Folds
+### Fit GLM Model to Folds
 
 ```{r}
 glm_rs <- data_wf %>% 
+  add_model(glm_spec) %>% 
   fit_resamples(
     resamples = folds,
     metrics = metric_set(roc_auc, accuracy, sensitivity, specificity),
@@ -169,69 +173,84 @@ glm_rs
 ### Collect Metrics
 
 ```{r}
-collect_metrics(glm_rs) %>% 
-  knitr::kable(digits = 3)
+collect_metrics(glm_rs)
+
 ```
+
+### Confusion Matrix
 
 ```{r}
 glm_rs %>% 
-  conf_mat_resampled() %>% 
-  knitr::kable(digits = 3)
+  conf_mat_resampled()
 ```
 
-### Plot ROC Curve
+
+### Plot ROC Curves
 
 ```{r}
 glm_rs %>% 
   collect_predictions() %>% 
   group_by(id) %>% 
   roc_curve(Loan_Status, .pred_N) %>% 
-  autoplot()
+  ggplot(aes(y = sensitivity, x = (1-specificity), group = id, color = id))+
+  geom_path(size = 1)+
+  geom_abline(slope = 1, intercept = 0, linetype = 2, color = "red")+
+  coord_equal()+
+  labs(title = "Logistic Regression ROC Curves", color = NULL, 
+       x = "1-Specificity",
+       y = "Sensitivity")+
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5),
+        panel.border = element_rect(colour = "black", fill=NA, size=0.5)
+        )
 ```
 
-## Final Fit
+### GLM Final Fit
 
 ```{r}
-final_fit <- data_wf %>% 
+glm_final_fit <- data_wf %>% 
+  add_model(glm_spec) %>% 
   last_fit(data_split,
-           metrics = metric_set(roc_auc, accuracy, sensitivity, specificity, kap),
-    control = control_resamples(save_pred = T))
+           metrics = metric_set(roc_auc, accuracy, sensitivity, specificity, kap))
 
-final_fit %>% head(10)
+glm_final_fit
 ```
 
+#### Collect Metrics
 ```{r}
-collect_metrics(final_fit) %>% 
-  knitr::kable(digits = 3)
+collect_metrics(glm_final_fit)
 ```
 
+#### Plot ROC Curve
 ```{r}
-final_fit %>% 
+glm_final_fit %>% 
   collect_predictions() %>% 
   group_by(id) %>% 
   roc_curve(Loan_Status, .pred_N) %>% 
   autoplot()
 ```
 
+#### Confusion Matrix
 ```{r}
-collect_predictions(final_fit) %>% 
+collect_predictions(glm_final_fit) %>% 
   conf_mat(Loan_Status, .pred_class)
 ```
 
+
+#### Coefficients
 ```{r}
-final_fit %>% 
+glm_final_fit %>% 
   pull(.workflow) %>% 
   pluck(1) %>% 
-  tidy(exponentiate = T) %>% 
-  arrange(p.value) %>% 
+  tidy(exponentiate = F) %>% 
+  arrange(estimate) %>% 
   filter(term != "(Intercept)") %>% 
-  knitr::kable(digits = 3)
-  
+  mutate_if(is.numeric, function(.x) round(.x, 4))
 ```
 
-
+#### Plot the coeficients
 ```{r}
-final_fit %>% 
+glm_final_fit %>% 
   pull(.workflow) %>% 
   pluck(1) %>% 
   tidy() %>% 
@@ -242,8 +261,90 @@ final_fit %>%
                     xmax = estimate + std.error),
                 width = 0.2, alpha = 0.7) +
   geom_point()+
-  labs(x = "Estimate",
-       y = "")
+  labs(x = "Coefficient",
+       y = NULL)
 ```
 
 The variables to the right of the vertical line increase the probability of eligibility of applicants while those on the left do the opposite.
+
+
+## Random Forest
+
+### Fit Model to Folds
+
+```{r}
+rf_rs <- data_wf %>% 
+  add_model(rf_spec) %>% 
+  fit_resamples(
+    resamples = folds,
+    metrics = metric_set(roc_auc, accuracy, sensitivity, specificity),
+    control = control_resamples(save_pred = T)
+  )
+
+rf_rs
+```
+
+
+### Collect Metrics
+```{r}
+collect_metrics(rf_rs)
+```
+### Confusion Matrix
+
+```{r}
+rf_rs %>% 
+  conf_mat_resampled()
+```
+
+### Plot ROC Curves
+
+```{r}
+rf_rs %>% 
+  collect_predictions() %>% 
+  group_by(id) %>% 
+  roc_curve(Loan_Status, .pred_N) %>% 
+  ggplot(aes(y = sensitivity, x = (1-specificity), group = id, color = id))+
+  geom_path(size = 1)+
+  geom_abline(slope = 1, intercept = 0, linetype = 2, color = "red")+
+  coord_equal()+
+  labs(title = "Random Forest ROC Curves", color = NULL, 
+       x = "1-Specificity",
+       y = "Sensitivity")+
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5),
+        panel.border = element_rect(colour = "black", fill=NA, size=0.5)
+        )
+```
+
+### RF Final Fit
+
+```{r}
+rf_final_fit <- data_wf %>% 
+  add_model(rf_spec) %>% 
+  last_fit(data_split,
+           metrics = metric_set(roc_auc, accuracy, sensitivity, specificity, kap))
+
+rf_final_fit
+```
+
+#### Collect Metrics
+
+```{r}
+collect_metrics(rf_final_fit)
+```
+
+#### Plot ROC Curve
+```{r}
+rf_final_fit %>% 
+  collect_predictions() %>% 
+  group_by(id) %>% 
+  roc_curve(Loan_Status, .pred_N) %>% 
+  autoplot()
+```
+
+#### Confusion Matrix
+```{r}
+collect_predictions(rf_final_fit) %>% 
+  conf_mat(Loan_Status, .pred_class)
+```
+
